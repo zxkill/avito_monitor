@@ -57,6 +57,21 @@ class ModelClassifierTests(unittest.TestCase):
         self.assertIsNone(result["variant_id"])
         self.assertEqual(result["debug"]["scope"], "family")
 
+
+    def test_variant_phrase_alias_builds_full_hierarchy(self) -> None:
+        """Фразовый variant-алиас должен давать variant и корректно достраивать family/brand."""
+        cls = self._make_classifier()
+        cls._phrase_aliases.append(
+            AliasRow(brand_id=None, family_id=None, variant_id=100, match_type="phrase", pattern="t480 type-c", weight=10)
+        )
+
+        result = cls.classify(title="ThinkPad T480 type-c", description="lenovo")
+
+        self.assertEqual(result["variant_id"], 100)
+        self.assertEqual(result["family_id"], 10)
+        self.assertEqual(result["brand_id"], 1)
+        self.assertEqual(result["debug"]["scope"], "variant")
+
     def test_fallback_dictionary_detects_brand_and_family(self) -> None:
         """Если алиасов нет, классификатор должен взять бренд/семейство из словаря БД."""
         cls = self._make_classifier()
