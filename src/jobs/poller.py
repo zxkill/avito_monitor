@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from typing import Any
 
 from aiogram import Bot
 
-from ..avito.client import AvitoClient
+from ..avito.client import AvitoBlockedError, AvitoClient
 from ..db.repo import ItemUpsert, Repo
 from ..analysis.classifier import ModelClassifier
 from ..analysis.report import build_report_v2
@@ -62,6 +63,51 @@ async def initial_collect_for_search(
     return saved
 
 
+async def _safe_fetch_page_cards(
+    client: AvitoClient,
+    session: Any,
+    *,
+    source: str,
+    search_id: int,
+    page: int,
+    max_tries: int = 2,
+) -> list:
+    """
+    Страховка на уровне страницы:
+    - если прилетела блокировка/капча (AvitoBlockedError) — попробуем 1-2 раза
+      с увеличением ожидания, затем пробрасываем наверх.
+    """
+    last_err: Exception | None = None
+    for attempt in range(1, max_tries + 1):
+        try:
+            return await client.fetch_page_cards_in_session(session, source, page)
+        except AvitoBlockedError as e:
+            last_err = e
+            sleep_s = min(20.0 * attempt + random.uniform(1.0, 8.0), 90.0)
+            log.warning(
+                "page blocked: search_id=%s source=%r page=%s attempt=%s/%s sleep=%.1fs err=%s",
+                search_id, source, page, attempt, max_tries, sleep_s, e,
+            )
+            if attempt == max_tries:
+                raise
+            await asyncio.sleep(sleep_s)
+        except Exception as e:
+            last_err = e
+            sleep_s = min(6.0 * attempt + random.uniform(0.5, 4.0), 30.0)
+            log.warning(
+                "page fetch error: search_id=%s source=%r page=%s attempt=%s/%s sleep=%.1fs err=%s",
+                search_id, source, page, attempt, max_tries, sleep_s, e,
+            )
+            if attempt == max_tries:
+                raise
+            await asyncio.sleep(sleep_s)
+
+    # unreachable
+    if last_err:
+        raise last_err
+    return []
+
+
 async def incremental_poll_all(
     repo: Repo,
     client: AvitoClient,
@@ -81,103 +127,142 @@ async def incremental_poll_all(
         new_items: list[dict] = []
         new_item_ids: list[int] = []
 
-        async with client._make_session() as session:
-            for page in range(1, client.cfg.max_pages + 1):
-                page_cards = await client.fetch_page_cards_in_session(session, source, page)
-                if not page_cards:
-                    log.info("stop pagination: empty page_cards: search_id=%s page=%s", search_id, page)
-                    break
-
-                exists_flags: list[bool] = []
-                for c in page_cards:
-                    exists = False
-                    if c.external_id:
-                        exists = await repo.item_exists_by_external_id(c.external_id)
-                    if not exists and c.url:
-                        exists = await repo.item_exists_by_url(c.url)
-                    exists_flags.append(exists)
-
-                all_new = all(not x for x in exists_flags)
-                log.info(
-                    "page check: search_id=%s source=%r page=%s page_cards=%s all_new=%s old_found=%s",
-                    search_id, source, page, len(page_cards), all_new, any(exists_flags)
-                )
-
-                for c, exists in zip(page_cards, exists_flags):
-                    if exists:
-                        continue
-
-                    cls = classifier.classify(title=c.title, description=c.description)
-                    raw2 = _build_raw_with_classification(c.raw, cls)
-
-                    item_id = await repo.upsert_item(
-                        ItemUpsert(
-                            search_id=search_id,
-                            external_id=c.external_id,
-                            url=c.url,
-                            title=c.title,
-                            price=c.price,
-                            city=c.city,
-                            description=c.description,
-                            seller_type=c.seller_type,
-                            photos_count=c.photos_count,
-                            status=c.status,
-                            raw=raw2,
-                        )
+        # ВАЖНО: не даём падать всему job из-за одного поиска.
+        try:
+            async with client._make_session() as session:
+                for page in range(1, client.cfg.max_pages + 1):
+                    page_cards = await _safe_fetch_page_cards(
+                        client,
+                        session,
+                        source=source,
+                        search_id=search_id,
+                        page=page,
+                        max_tries=2,
                     )
-                    new_item_ids.append(item_id)
-                    new_items.append(
-                        {
-                            "id": item_id,
-                            "url": c.url,
-                            "title": c.title,
-                            "price": c.price,
-                            "city": c.city,
-                            "description": c.description,
-                        }
-                    )
+
+                    if not page_cards:
+                        log.info("stop pagination: empty page_cards: search_id=%s page=%s", search_id, page)
+                        break
+
+                    # Проверка "старое/новое"
+                    exists_flags: list[bool] = []
+                    for c in page_cards:
+                        exists = False
+                        if c.external_id:
+                            exists = await repo.item_exists_by_external_id(c.external_id)
+                        if not exists and c.url:
+                            exists = await repo.item_exists_by_url(c.url)
+                        exists_flags.append(exists)
+
+                    all_new = all(not x for x in exists_flags)
+                    old_found = any(exists_flags)
 
                     log.info(
-                        "classified: item_id=%s conf=%s brand=%s family=%s variant=%s title=%r",
-                        item_id,
-                        cls.get("confidence"),
-                        cls.get("brand_id"),
-                        cls.get("family_id"),
-                        cls.get("variant_id"),
-                        (c.title or "")[:80],
+                        "page check: search_id=%s source=%r page=%s page_cards=%s all_new=%s old_found=%s",
+                        search_id, source, page, len(page_cards), all_new, old_found,
                     )
 
-                if not all_new:
-                    log.info("stop pagination: found old items on page: search_id=%s page=%s", search_id, page)
-                    break
+                    # Сохраняем только новые
+                    for c, exists in zip(page_cards, exists_flags):
+                        if exists:
+                            continue
 
-                if page != client.cfg.max_pages:
-                    delay = client.cfg.page_delay_s + random.uniform(0.5, 2.0)
-                    await asyncio.sleep(delay)
+                        cls = classifier.classify(title=c.title, description=c.description)
+                        raw2 = _build_raw_with_classification(c.raw, cls)
 
-        await repo.touch_search_polled(search_id)
+                        item_id = await repo.upsert_item(
+                            ItemUpsert(
+                                search_id=search_id,
+                                external_id=c.external_id,
+                                url=c.url,
+                                title=c.title,
+                                price=c.price,
+                                city=c.city,
+                                description=c.description,
+                                seller_type=c.seller_type,
+                                photos_count=c.photos_count,
+                                status=c.status,
+                                raw=raw2,
+                            )
+                        )
 
+                        new_item_ids.append(item_id)
+                        new_items.append(
+                            {
+                                "id": item_id,
+                                "url": c.url,
+                                "title": c.title,
+                                "price": c.price,
+                                "city": c.city,
+                                "description": c.description,
+                            }
+                        )
+
+                        log.info(
+                            "classified: item_id=%s conf=%s brand=%s family=%s variant=%s title=%r",
+                            item_id,
+                            cls.get("confidence"),
+                            cls.get("brand_id"),
+                            cls.get("family_id"),
+                            cls.get("variant_id"),
+                            (c.title or "")[:80],
+                        )
+
+                    # Если встретили старые — дальше листать бессмысленно
+                    if not all_new:
+                        log.info("stop pagination: found old items on page: search_id=%s page=%s", search_id, page)
+                        break
+
+                    # Пауза между страницами
+                    if page != client.cfg.max_pages:
+                        delay = client.cfg.page_delay_s + random.uniform(0.5, 2.0)
+                        await asyncio.sleep(delay)
+
+            await repo.touch_search_polled(search_id)
+
+        except AvitoBlockedError as e:
+            # Мягко: фиксируем и идём дальше, чтобы scheduler не падал.
+            log.warning(
+                "poll blocked: search_id=%s source=%r new_so_far=%s err=%s",
+                search_id, source, len(new_items), e,
+            )
+            # небольшая пауза, чтобы не усугублять
+            cooloff = 90.0 + random.uniform(0.0, 60.0)
+            log.info("cooloff after block: %.1fs", cooloff)
+            await asyncio.sleep(cooloff)
+            continue
+        except Exception as e:
+            log.exception(
+                "poll failed: search_id=%s source=%r new_so_far=%s err=%s",
+                search_id, source, len(new_items), e,
+            )
+            # короткая пауза и продолжаем следующий search
+            await asyncio.sleep(10.0 + random.uniform(0.0, 10.0))
+            continue
+
+        # уведомления
         if new_items and bot and notify_chat_id:
-            stats = await repo.get_price_stats(search_id, window=500)
+            try:
+                stats = await repo.get_price_stats(search_id, window=500)
 
-            # Для корректной оценки выгоды считаем персональный рынок для каждого нового лота:
-            # variant -> family -> fallback search.
-            for it in new_items:
-                item_id = int(it["id"])
-                lot_stats = await repo.get_price_stats_for_item(item_id=item_id, search_id=search_id, window=500)
-                it["market_stats"] = {
-                    **lot_stats,
-                }
-                log.debug("market stats prepared: item_id=%s stats=%s", item_id, it["market_stats"])
+                for it in new_items:
+                    item_id = int(it["id"])
+                    lot_stats = await repo.get_price_stats_for_item(item_id=item_id, search_id=search_id, window=500)
+                    it["market_stats"] = {**lot_stats}
+                    log.debug("market stats prepared: item_id=%s stats=%s", item_id, it["market_stats"])
 
-            messages = build_report_v2(source, stats, new_items, top_n=10, score_min=65, profit_min_need=1500)
-            for msg in messages:
-                await bot.send_message(notify_chat_id, msg, parse_mode="HTML", disable_web_page_preview=True)
+                messages = build_report_v2(source, stats, new_items, top_n=10, score_min=65, profit_min_need=1500)
+                for msg in messages:
+                    await bot.send_message(notify_chat_id, msg, parse_mode="HTML", disable_web_page_preview=True)
 
-            await repo.mark_items_reported(new_item_ids)
+                await repo.mark_items_reported(new_item_ids)
+            except Exception as e:
+                # не валим polling из-за проблем с телегой/отчётом
+                log.exception("notify failed: search_id=%s source=%r err=%s", search_id, source, e)
 
         log.info("poll result: search_id=%s source=%r new_total=%s", search_id, source, len(new_items))
 
+        # задержка между поисковыми запросами
         if idx != len(searches) - 1:
             extra = random.uniform(0.0, float(jitter_s)) if jitter_s and jitter_s > 0 else 0.0
             delay = float(between_queries_delay_s) + extra

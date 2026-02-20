@@ -4,6 +4,7 @@ import asyncio
 import logging
 import random
 from dataclasses import dataclass
+from typing import Optional
 from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qsl
 
 import aiohttp
@@ -26,44 +27,122 @@ class AvitoBlockedError(RuntimeError):
     pass
 
 
-async def fetch_page(session: aiohttp.ClientSession, url: str) -> str:
-    max_tries = 5
-    base_sleep = 8
+# Маркеры "антибот" для редиректов (Location)
+_BLOCK_REDIRECT_MARKERS = (
+    "captcha",
+    "blocked",
+    "security",
+    "check",
+    "verify",
+    "antibot",
+    "challenge",
+)
+
+# Статусы, которые обычно означают блок / ограничение
+_BLOCK_STATUSES = (401, 403, 429)
+
+
+def _jitter(a: float, b: float) -> float:
+    return random.uniform(a, b)
+
+
+def _safe_head(text: str, n: int = 240) -> str:
+    t = text or ""
+    t = t.replace("\n", " ").replace("\r", " ")
+    return t[:n]
+
+
+async def fetch_page(
+    session: aiohttp.ClientSession,
+    url: str,
+    *,
+    max_tries: int = 6,
+    base_sleep_s: float = 6.0,
+    max_sleep_s: float = 120.0,
+) -> str:
+    """
+    Мягкая загрузка HTML:
+    - allow_redirects=False, чтобы видеть 3xx и Location
+    - 200 -> return html
+    - 429/403/401 -> backoff+retry
+    - 3xx -> логируем Location; часто это антибот. backoff+retry
+    - сетевые/таймауты -> backoff+retry
+    """
+    last_status: Optional[int] = None
+    last_location: Optional[str] = None
 
     for attempt in range(1, max_tries + 1):
-        async with session.get(url, allow_redirects=True) as resp:
-            status = resp.status
+        try:
+            async with session.get(url, allow_redirects=False) as resp:
+                status = resp.status
+                last_status = status
+                location = resp.headers.get("Location")
+                last_location = location
 
-            if status == 200:
-                return await resp.text()
+                # читаем body для диагностики (полностью), но в лог пишем только head
+                # (Avito HTML обычно не гигантский, а вам нужен парсинг)
+                body = await resp.text(errors="ignore")
+                body_head = _safe_head(body, 260)
 
-            if status in (429, 403):
-                sleep_s = base_sleep * (2 ** (attempt - 1)) + random.uniform(0.0, 2.0)
-                sleep_s = min(sleep_s, 90.0)
+                if status == 200:
+                    return body
 
-                try:
-                    await resp.read()
-                except Exception:
-                    pass
+                # rate limit / forbidden -> backoff
+                if status in _BLOCK_STATUSES:
+                    sleep_s = min(base_sleep_s * (2 ** (attempt - 1)) + _jitter(0.4, 3.0), max_sleep_s)
+                    log.warning(
+                        "fetch blocked: status=%s attempt=%s/%s sleep=%.1fs url=%s location=%s body_head=%r",
+                        status, attempt, max_tries, sleep_s, url, location, body_head,
+                    )
+                    if attempt == max_tries:
+                        raise AvitoBlockedError(
+                            f"Blocked with status {status} after retries url={url} location={location}"
+                        )
+                    await asyncio.sleep(sleep_s)
+                    continue
 
-                log.warning(
-                    "fetch blocked: status=%s attempt=%s/%s sleep=%.1fs url=%s",
-                    status, attempt, max_tries, sleep_s, url
-                )
+                # redirects (anti-bot often)
+                if status in (301, 302, 303, 307, 308):
+                    loc = (location or "").strip()
+                    loc_l = loc.lower()
 
-                if attempt == max_tries:
-                    raise AvitoBlockedError(f"Blocked with status {status} after retries")
+                    looks_like_block = any(m in loc_l for m in _BLOCK_REDIRECT_MARKERS)
 
-                await asyncio.sleep(sleep_s)
-                continue
+                    # иногда редирект может быть "легитимный", но нам всё равно нужен HTML целевой выдачи,
+                    # а не промежуточный редирект — поэтому ретраим с бэкофом.
+                    sleep_s = min(base_sleep_s * attempt + _jitter(0.8, 6.0), max_sleep_s)
+                    log.warning(
+                        "fetch redirect: status=%s attempt=%s/%s sleep=%.1fs url=%s location=%s looks_like_block=%s body_head=%r",
+                        status, attempt, max_tries, sleep_s, url, loc, looks_like_block, body_head,
+                    )
 
-            try:
-                body = await resp.text()
-            except Exception:
-                body = ""
-            raise Exception(f"HTTP {status} for {url}. Body={body[:200]}")
+                    if attempt == max_tries:
+                        raise AvitoBlockedError(
+                            f"Redirect {status} after retries url={url} location={loc}"
+                        )
+                    await asyncio.sleep(sleep_s)
+                    continue
 
-    raise Exception("unreachable")
+                # прочее — ошибка
+                raise Exception(f"HTTP {status} for {url}. Body={body_head}")
+
+        except AvitoBlockedError:
+            raise
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            # сетевые/таймауты: тоже backoff
+            sleep_s = min(base_sleep_s * attempt + _jitter(0.5, 5.0), max_sleep_s)
+            log.warning(
+                "fetch error: attempt=%s/%s sleep=%.1fs url=%s err=%s",
+                attempt, max_tries, sleep_s, url, e,
+            )
+            if attempt == max_tries:
+                raise AvitoBlockedError(
+                    f"Network/timeout after retries url={url} last_status={last_status} last_location={last_location}"
+                ) from e
+            await asyncio.sleep(sleep_s)
+            continue
+
+    raise AvitoBlockedError(f"unreachable: url={url} last_status={last_status} last_location={last_location}")
 
 
 class AvitoClient:
@@ -108,6 +187,7 @@ class AvitoClient:
 
     def _make_session(self) -> aiohttp.ClientSession:
         timeout = aiohttp.ClientTimeout(total=self.cfg.timeout_s)
+
         headers = {
             "User-Agent": self.cfg.user_agent,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -117,9 +197,25 @@ class AvitoClient:
             "Upgrade-Insecure-Requests": "1",
             "Cache-Control": "max-age=0",
         }
-        # мягко: один коннект, меньше подозрений
-        connector = aiohttp.TCPConnector(limit=1, ttl_dns_cache=300, ssl=False)
-        return aiohttp.ClientSession(timeout=timeout, headers=headers, connector=connector, cookie_jar=aiohttp.CookieJar(unsafe=True))
+
+        # Мягко, но устойчиво:
+        # - limit=2 (не 1), чтобы не зависать на единственном сокете в редких сценариях
+        # - keepalive_timeout удерживает соединение
+        connector = aiohttp.TCPConnector(
+            limit=2,
+            limit_per_host=2,
+            ttl_dns_cache=600,
+            keepalive_timeout=30,
+            enable_cleanup_closed=True,
+            ssl=False,
+        )
+
+        return aiohttp.ClientSession(
+            timeout=timeout,
+            headers=headers,
+            connector=connector,
+            cookie_jar=aiohttp.CookieJar(unsafe=True),
+        )
 
     @staticmethod
     def _looks_like_protection(html_text: str) -> bool:
@@ -127,7 +223,6 @@ class AvitoClient:
         Делать максимально точным: иначе пустые страницы можно перепутать с защитой.
         """
         low = (html_text or "").lower()
-
         markers = [
             "captcha",
             "recaptcha",
@@ -137,6 +232,8 @@ class AvitoClient:
             "мы обнаружили подозрительную активность",
             "доступ ограничен",
             "robot check",
+            "anti-bot",
+            "проверка на робота",
         ]
         return any(m in low for m in markers)
 
@@ -164,16 +261,19 @@ class AvitoClient:
         url = self.build_source_url(source, page)
         html_text = await fetch_page(session, url)
 
+        # дополнительная страховка: иногда антибот приходит с 200
+        if self._looks_like_protection(html_text):
+            log.warning("Avito protection page (200) detected: source=%r page=%s url=%s", source, page, url)
+            raise AvitoBlockedError("Protection HTML detected")
+
         cards = parse_catalog_page(html_text)
 
-        # Логи причины (важно для отладки)
         if not cards:
-            if self._looks_like_protection(html_text):
-                log.warning("Avito protection detected: source=%r page=%s url=%s", source, page, url)
-            elif self._looks_like_empty_results(html_text):
+            if self._looks_like_empty_results(html_text):
                 log.info("Avito empty results page: source=%r page=%s url=%s", source, page, url)
             else:
-                log.info("Avito page without cards (unknown reason): source=%r page=%s url=%s", source, page, url)
+                log.info("Avito page without cards (unknown reason): source=%r page=%s url=%s head=%r",
+                         source, page, url, _safe_head(html_text, 220))
 
         log.info("Avito page parsed: source=%r page=%s cards=%s url=%s", source, page, len(cards), url)
         return cards
@@ -191,29 +291,22 @@ class AvitoClient:
             for p in range(1, self.cfg.max_pages + 1):
                 url = self.build_source_url(source, p)
                 html_text = await fetch_page(session, url)
-                cards = parse_catalog_page(html_text)
 
-                # 1) Protection -> стоп сразу
-                if not cards and self._looks_like_protection(html_text):
-                    log.warning(
-                        "stop fetch_pages due to protection: source=%r page=%s url=%s",
-                        source, p, url
-                    )
+                if self._looks_like_protection(html_text):
+                    log.warning("stop fetch_pages due to protection(200): source=%r page=%s url=%s", source, p, url)
                     raise AvitoBlockedError(f"Protection page detected at page={p}")
 
-                # 2) Пусто -> стоп (конец/нет выдачи)
+                cards = parse_catalog_page(html_text)
+
                 if not cards:
                     reason = "empty_results" if self._looks_like_empty_results(html_text) else "no_cards"
-                    log.info(
-                        "stop fetch_pages: reason=%s source=%r page=%s url=%s",
-                        reason, source, p, url
-                    )
+                    log.info("stop fetch_pages: reason=%s source=%r page=%s url=%s", reason, source, p, url)
                     break
 
                 pages.append(cards)
 
                 if p != self.cfg.max_pages:
-                    delay = self.cfg.page_delay_s + random.uniform(0.5, 2.0)
+                    delay = self.cfg.page_delay_s + _jitter(0.5, 2.0)
                     await asyncio.sleep(delay)
 
         return pages
