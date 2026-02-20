@@ -267,3 +267,30 @@ class Repo:
         """
         async with self.pool.acquire() as conn:
             return await conn.fetch(sql, category, limit)
+
+    async def list_unclassified_items(
+        self,
+        *,
+        category: str = "laptop",
+        limit: int = 200,
+        with_description: bool = False,
+    ) -> Sequence[asyncpg.Record]:
+        """
+        Нераспознанные лоты: когда не определили ни family, ни variant.
+        Полезно для системного пополнения словаря.
+        """
+        fields = "id, url, title, price, city, last_seen_at"
+        if with_description:
+            fields += ", description"
+
+        sql = f"""
+        SELECT {fields}
+        FROM items
+        WHERE category = $1
+          AND model_family_id IS NULL
+          AND model_variant_id IS NULL
+        ORDER BY last_seen_at DESC
+        LIMIT $2
+        """
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(sql, category, limit)

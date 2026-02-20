@@ -353,7 +353,11 @@ class ModelClassifier:
         base_score = brand_scores.get(brand_id, 0) if brand_id is not None else 0
         if family_id is not None:
             scope = "family"
-            base_score = max(base_score, family_scores.get(family_id, 0), 3 if "family_id_from_dictionary" in inferred else 0)
+            base_score = max(
+                base_score,
+                family_scores.get(family_id, 0),
+                3 if "family_id_from_dictionary" in inferred else 0,
+            )
         if variant_id is not None:
             scope = "variant"
             base_score = max(base_score, variant_scores.get(variant_id, 0))
@@ -364,7 +368,9 @@ class ModelClassifier:
         if "family_id_from_dictionary" in inferred:
             base_score = max(base_score, 3)
 
-        confidence = min(100, base_score * 5 + (10 if scope == "variant" else (5 if scope == "family" else 0)))
+        # confidence 0..1
+        bonus = 0.10 if scope == "variant" else (0.05 if scope == "family" else 0.0)
+        confidence = min(1.0, (base_score * 0.05) + bonus)
 
         best.update(
             {

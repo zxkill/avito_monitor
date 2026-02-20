@@ -119,7 +119,7 @@ class AvitoClient:
         }
         # мягко: один коннект, меньше подозрений
         connector = aiohttp.TCPConnector(limit=1, ttl_dns_cache=300, ssl=False)
-        return aiohttp.ClientSession(timeout=timeout, headers=headers, connector=connector)
+        return aiohttp.ClientSession(timeout=timeout, headers=headers, connector=connector, cookie_jar=aiohttp.CookieJar(unsafe=True))
 
     @staticmethod
     def _looks_like_protection(html_text: str) -> bool:

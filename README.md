@@ -95,3 +95,19 @@ python -m unittest discover -s tests -v
 - APScheduler
 - aiohttp
 - PostgreSQL
+
+
+## Системное пополнение словаря моделей (semi-auto)
+
+Скрипт анализирует последние нераспознанные объявления (model_family_id/model_variant_id = NULL),
+достаёт из текста частотные модельные коды и генерирует SQL-патч для таблиц:
+brands / model_families / model_aliases.
+
+Запуск:
+
+python -m src.scripts.dict_suggest_from_misses --limit 8000 --top 300 --min-freq 6 --out-sql var/dictionary_patch.sql
+
+Дальше:
+1) Проверить var/dictionary_patch.sql
+2) Применить в БД
+3) Перезапустить бот (или перезагрузить классификатор)
