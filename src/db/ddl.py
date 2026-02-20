@@ -211,7 +211,9 @@ VALUES
   ('Dexp', 'dexp'),
   ('Irbis', 'irbis'),
   ('Razer', 'razer'),
-  ('Microsoft', 'microsoft')
+  ('Microsoft', 'microsoft'),
+  ('Infinix', 'infinix'),
+  ('eMachines', 'emachines')
 ON CONFLICT (name_norm) DO NOTHING;
 
 -- 2) Семейства: наиболее частые линейки и серии, чтобы резко поднять recall по family.
@@ -302,7 +304,12 @@ FROM (
     ('dexp', 'DEXP Atlas H115', 'dexp atlas h115'),
     ('irbis', 'Irbis NB', 'irbis nb'),
     ('chuwi', 'Chuwi HeroBook', 'chuwi herobook'),
-    ('microsoft', 'Microsoft Surface Laptop 4', 'microsoft surface laptop 4')
+    ('microsoft', 'Microsoft Surface Laptop 4', 'microsoft surface laptop 4'),
+    ('infinix', 'Infinix InBook X3 XL422', 'infinix inbook x3 xl422'),
+    ('emachines', 'eMachines E728', 'emachines e728'),
+    ('acer', 'Acer Aspire 5635ZG', 'acer aspire 5635zg'),
+    ('apple', 'Apple MacBook Pro 13 2013', 'apple macbook pro 13 2013'),
+    ('dns', 'DNS Netbook', 'dns netbook')
 ) AS x(brand_norm, family_name, family_name_norm)
 JOIN brands b ON b.name_norm = x.brand_norm
 ON CONFLICT (brand_id, family_name_norm) DO NOTHING;
@@ -321,7 +328,9 @@ FROM (
     ('apple macbook air 13', 'Apple MacBook Air 13 M1', 'apple macbook air 13 m1', NULL, 2020),
     ('apple macbook pro 13', 'Apple MacBook Pro 13 M1', 'apple macbook pro 13 m1', NULL, 2020),
     ('honor magicbook 14', 'Honor MagicBook 14 2021', 'honor magicbook 14 2021', NULL, 2021),
-    ('acer nitro 5', 'Acer Nitro 5 AN515', 'acer nitro 5 an515', NULL, NULL)
+    ('acer nitro 5', 'Acer Nitro 5 AN515', 'acer nitro 5 an515', NULL, NULL),
+    ('apple macbook pro 13', 'Apple MacBook Pro 13 2013', 'apple macbook pro 13 2013', NULL, 2013),
+    ('infinix inbook x3 xl422', 'Infinix InBook X3 XL422', 'infinix inbook x3 xl422', NULL, NULL)
 ) AS x(family_name_norm, variant_name, variant_name_norm, gen, year)
 JOIN model_families mf ON mf.family_name_norm = x.family_name_norm
 ON CONFLICT (family_id, variant_name_norm) DO NOTHING;
@@ -347,7 +356,12 @@ FROM (
     ('xiaomi', 'xiaomi', 3),
     ('msi', 'msi', 3),
     ('sony', 'vaio', 3),
-    ('microsoft', 'surface', 3)
+    ('microsoft', 'surface', 3),
+    ('infinix', 'infinix', 3),
+    ('emachines', 'emachines', 3),
+    ('emachines', 'machines', 2),
+    ('apple', 'macbook', 4),
+    ('samsung', 'самсунг', 4)
 ) AS x(brand_norm, pattern, weight)
 JOIN brands b ON b.name_norm = x.brand_norm
 WHERE NOT EXISTS (
@@ -374,12 +388,36 @@ FROM (
     ('hp elitebook 840 g5', '840g5', 8),
     ('apple macbook air 13', 'air13', 7),
     ('apple macbook pro 13', 'pro13', 7),
-    ('acer nitro 5', 'nitro5', 8)
+    ('acer nitro 5', 'nitro5', 8),
+    ('acer aspire 5635zg', '5635zg', 9),
+    ('infinix inbook x3 xl422', 'xl422', 9),
+    ('infinix inbook x3 xl422', 'inbookx3', 9),
+    ('emachines e728', 'e728', 9),
+    ('dns netbook', 'dnsnetbook', 7),
+    ('apple macbook pro 13', 'macbookpro13', 8),
+    ('apple macbook pro 13 2013', 'pro13 2013', 9)
 ) AS x(family_name_norm, pattern, weight)
 JOIN model_families mf ON mf.family_name_norm = x.family_name_norm
 WHERE NOT EXISTS (
   SELECT 1 FROM model_aliases ma
   WHERE ma.family_id = mf.id AND ma.match_type = 'token' AND ma.pattern = x.pattern
+);
+
+
+
+INSERT INTO model_aliases(family_id, match_type, pattern, weight)
+SELECT mf.id, 'phrase', x.pattern, x.weight
+FROM (
+  VALUES
+    ('acer aspire 5635zg', '5635 zg', 9),
+    ('apple macbook pro 13 2013', 'macbook pro 13 2013', 10),
+    ('samsung r528', 'самсунг r528', 9),
+    ('dns netbook', 'netbook dns', 8)
+) AS x(family_name_norm, pattern, weight)
+JOIN model_families mf ON mf.family_name_norm = x.family_name_norm
+WHERE NOT EXISTS (
+  SELECT 1 FROM model_aliases ma
+  WHERE ma.family_id = mf.id AND ma.match_type = 'phrase' AND ma.pattern = x.pattern
 );
 
 INSERT INTO model_aliases(variant_id, match_type, pattern, weight)
@@ -392,7 +430,9 @@ FROM (
     ('lenovo thinkpad x1 carbon gen 7', 'x1 carbon gen 7', 10),
     ('apple macbook air 13 m1', 'air m1', 10),
     ('apple macbook pro 13 m1', 'pro m1', 10),
-    ('acer nitro 5 an515', 'an515', 10)
+    ('acer nitro 5 an515', 'an515', 10),
+    ('apple macbook pro 13 2013', 'macbook pro 13 2013', 10),
+    ('infinix inbook x3 xl422', 'inbook x3 xl422', 10)
 ) AS x(variant_name_norm, pattern, weight)
 JOIN model_variants mv ON mv.variant_name_norm = x.variant_name_norm
 WHERE NOT EXISTS (

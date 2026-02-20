@@ -28,10 +28,12 @@ class ModelClassifierTests(unittest.TestCase):
         cls._regex_aliases = []
         cls._variant_to_family = {100: 10}
         cls._variant_to_brand = {100: 1}
-        cls._family_to_brand = {10: 1, 20: 2}
-        cls._brand_norm_to_id = {"acer": 2, "lenovo": 1}
+        cls._family_to_brand = {10: 1, 20: 2, 30: 3, 40: 4}
+        cls._brand_norm_to_id = {"acer": 2, "lenovo": 1, "samsung": 3, "apple": 4}
         cls._family_rows = [
-            FamilyRow(family_id=20, brand_id=2, norm="acer aspire 5315", compact="aceraspire5315")
+            FamilyRow(family_id=20, brand_id=2, norm="acer aspire 5315", compact="aceraspire5315"),
+            FamilyRow(family_id=30, brand_id=3, norm="samsung r528", compact="samsungr528"),
+            FamilyRow(family_id=40, brand_id=4, norm="apple macbook pro 13 2013", compact="applemacbookpro132013")
         ]
         return cls
 
@@ -71,6 +73,37 @@ class ModelClassifierTests(unittest.TestCase):
         self.assertEqual(result["family_id"], 10)
         self.assertEqual(result["brand_id"], 1)
         self.assertEqual(result["debug"]["scope"], "variant")
+
+
+    def test_russian_brand_word_is_normalized(self) -> None:
+        """Русское название бренда должно нормализоваться в каноническую форму."""
+        cls = self._make_classifier()
+
+        result = cls.classify(title="Самсунг R528", description="ноутбук")
+
+        self.assertEqual(result["brand_id"], 3)
+        self.assertEqual(result["family_id"], 30)
+
+    def test_typo_aser_is_normalized_to_acer(self) -> None:
+        """Опечатка Aser должна приводиться к Acer для срабатывания семейства."""
+        cls = self._make_classifier()
+        cls._family_rows.append(FamilyRow(family_id=21, brand_id=2, norm="acer aspire 5635zg", compact="aceraspire5635zg"))
+        cls._family_to_brand[21] = 2
+        cls._phrase_aliases.append(AliasRow(brand_id=2, family_id=21, variant_id=None, match_type="phrase", pattern="5635 zg", weight=9))
+
+        result = cls.classify(title="Ноутбук Aser 5635 zg", description=None)
+
+        self.assertEqual(result["brand_id"], 2)
+        self.assertEqual(result["family_id"], 21)
+
+    def test_macbook_with_year_detects_family(self) -> None:
+        """MacBook Pro 13 (2013) должен определяться как отдельное семейство."""
+        cls = self._make_classifier()
+
+        result = cls.classify(title="MacBook Pro 13 (2013)", description="512GB")
+
+        self.assertEqual(result["brand_id"], 4)
+        self.assertEqual(result["family_id"], 40)
 
     def test_fallback_dictionary_detects_brand_and_family(self) -> None:
         """Если алиасов нет, классификатор должен взять бренд/семейство из словаря БД."""

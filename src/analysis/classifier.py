@@ -9,6 +9,32 @@ import asyncpg
 
 log = logging.getLogger(__name__)
 
+# Словарь типовых "человеческих" написаний брендов/линеек (кириллица/опечатки).
+# Эти подстановки применяются до основного матчинга и резко улучшают recall
+# на реальных заголовках Avito вроде "Самсунг", "Aser", "макбук".
+_HUMAN_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bсамсунг\b", re.I), "samsung"),
+    (re.compile(r"\bасер\b", re.I), "acer"),
+    (re.compile(r"\baser\b", re.I), "acer"),
+    (re.compile(r"\bэйсер\b", re.I), "acer"),
+    (re.compile(r"\bасус\b", re.I), "asus"),
+    (re.compile(r"\bленово\b", re.I), "lenovo"),
+    (re.compile(r"\bмакбук\b", re.I), "apple macbook"),
+    (re.compile(r"\bmacbook\b", re.I), "apple macbook"),
+    (re.compile(r"\bинфиникс\b", re.I), "infinix"),
+    (re.compile(r"\bнетбук\b", re.I), "netbook"),
+    (re.compile(r"\bнэтбук\b", re.I), "netbook"),
+)
+
+
+def _replace_human_spellings(s: str) -> str:
+    """Нормализует частые русские написания брендов/моделей и опечатки."""
+    out = s or ""
+    for rx, repl in _HUMAN_REPLACEMENTS:
+        out = rx.sub(repl, out)
+    return out
+
+
 
 @dataclass(frozen=True)
 class AliasRow:
@@ -32,7 +58,7 @@ class FamilyRow:
 
 def _norm_text(s: str) -> str:
     """Нормализует текст объявления для устойчивого матчинга."""
-    s = (s or "").lower()
+    s = _replace_human_spellings((s or "").lower())
     s = s.replace("ё", "е")
     # Нормализуем визуально похожие кириллические символы в латиницу.
     s = s.translate(str.maketrans({
@@ -50,7 +76,7 @@ def _norm_text(s: str) -> str:
 
 def _compact(s: str) -> str:
     """Удаляет разделители, чтобы сравнивать кодовые написания в стиле x61sv/x61-sv."""
-    return re.sub(r"[\s\-_/]+", "", s or "")
+    return re.sub(r"[^a-zа-я0-9]+", "", (s or "").lower())
 
 
 def _tokenize(s: str) -> set[str]:
@@ -199,7 +225,7 @@ class ModelClassifier:
         for bnorm, bid in self._brand_norm_to_id.items():
             # Проверяем и токены, и подпоследовательность в тексте — это закрывает
             # случаи вроде "samsung", "sam sung", "honor" в произвольной форме заголовка.
-            if bnorm in tokens or bnorm in text:
+            if bnorm in tokens or bnorm in text or _compact(bnorm) in _compact(text):
                 return bid
         return None
 
