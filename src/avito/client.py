@@ -41,6 +41,36 @@ _BLOCK_REDIRECT_MARKERS = (
 # Статусы, которые обычно означают блок / ограничение
 _BLOCK_STATUSES = (401, 403, 429)
 
+# Большой пул User-Agent'ов для ротации при временных блокировках Avito.
+# Список содержит популярные современные браузеры на разных ОС, чтобы снизить
+# вероятность повторной блокировки из-за «примелькавшегося» fingerprint.
+_USER_AGENT_POOL = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13.6; rv:134.0) Gecko/20100101 Firefox/134.0",
+    "Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edg/133.0.3065.69",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Opera/116.0.5366.71",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Brave/1.75.181 Chrome/132.0.0.0 Safari/537.36",
+)
+
+
+def _rotate_user_agent(session: aiohttp.ClientSession) -> str:
+    """
+    Выбирает случайный User-Agent из пула и применяет его к текущей сессии.
+
+    Важно: стараемся не выбирать тот же самый UA повторно в рамках одного
+    шага ретрая, чтобы действительно изменить «отпечаток» клиента.
+    """
+    current_ua = str(session.headers.get("User-Agent") or "")
+    candidates = [ua for ua in _USER_AGENT_POOL if ua != current_ua] or list(_USER_AGENT_POOL)
+    new_ua = random.choice(candidates)
+    session.headers["User-Agent"] = new_ua
+    return new_ua
+
 
 def _jitter(a: float, b: float) -> float:
     return random.uniform(a, b)
@@ -64,7 +94,7 @@ async def fetch_page(
     Мягкая загрузка HTML:
     - allow_redirects=False, чтобы видеть 3xx и Location
     - 200 -> return html
-    - 429/403/401 -> backoff+retry
+    - 429/403/401 -> смена User-Agent + ожидание 60с + retry
     - 3xx -> логируем Location; часто это антибот. backoff+retry
     - сетевые/таймауты -> backoff+retry
     """
@@ -89,10 +119,14 @@ async def fetch_page(
 
                 # rate limit / forbidden -> backoff
                 if status in _BLOCK_STATUSES:
-                    sleep_s = min(base_sleep_s * (2 ** (attempt - 1)) + _jitter(0.4, 3.0), max_sleep_s)
+                    # Для «жёстких» блокировок (429/403/401) используем фиксированную
+                    # паузу в 60 секунд и одновременно меняем User-Agent.
+                    # Это явно соответствует стратегии: «сменить fingerprint + выждать». 
+                    rotated_ua = _rotate_user_agent(session)
+                    sleep_s = 60.0
                     log.warning(
-                        "fetch blocked: status=%s attempt=%s/%s sleep=%.1fs url=%s location=%s body_head=%r",
-                        status, attempt, max_tries, sleep_s, url, location, body_head,
+                        "fetch blocked: status=%s attempt=%s/%s action=rotate_user_agent wait=%.1fs url=%s location=%s new_user_agent=%r body_head=%r",
+                        status, attempt, max_tries, sleep_s, url, location, rotated_ua, body_head,
                     )
                     if attempt == max_tries:
                         raise AvitoBlockedError(
@@ -111,9 +145,15 @@ async def fetch_page(
                     # иногда редирект может быть "легитимный", но нам всё равно нужен HTML целевой выдачи,
                     # а не промежуточный редирект — поэтому ретраим с бэкофом.
                     sleep_s = min(base_sleep_s * attempt + _jitter(0.8, 6.0), max_sleep_s)
+                    rotated_ua = None
+                    if looks_like_block:
+                        # Если редирект похож на антибот-защиту, применяем ту же стратегию,
+                        # что и для 429: смена User-Agent и ожидание 60 секунд.
+                        rotated_ua = _rotate_user_agent(session)
+                        sleep_s = 60.0
                     log.warning(
-                        "fetch redirect: status=%s attempt=%s/%s sleep=%.1fs url=%s location=%s looks_like_block=%s body_head=%r",
-                        status, attempt, max_tries, sleep_s, url, loc, looks_like_block, body_head,
+                        "fetch redirect: status=%s attempt=%s/%s sleep=%.1fs url=%s location=%s looks_like_block=%s new_user_agent=%r body_head=%r",
+                        status, attempt, max_tries, sleep_s, url, loc, looks_like_block, rotated_ua, body_head,
                     )
 
                     if attempt == max_tries:
