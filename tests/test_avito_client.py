@@ -5,7 +5,13 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from src.avito.client import _rotate_user_agent, fetch_page
+from src.avito.client import (
+    AvitoClient,
+    AvitoClientConfig,
+    BrowserFingerprint,
+    _rotate_user_agent,
+    fetch_page,
+)
 
 
 class _FakeResponse:
@@ -52,14 +58,23 @@ class AvitoClientFetchPageTests(unittest.IsolatedAsyncioTestCase):
     """Проверяет ретраи при блокировках, ротацию UA и ожидание перед повтором."""
 
     def test_rotate_user_agent_replaces_header(self) -> None:
-        """Ротация должна установить новый UA в заголовках сессии."""
+        """Ротация должна установить новый UA и согласованные client hints."""
         session = _FakeSession(responses=[], user_agent="UA-OLD")
 
-        with patch("src.avito.client.random.choice", return_value="UA-NEW"):
+        chosen_fp = BrowserFingerprint(
+            user_agent="UA-NEW",
+            sec_ch_ua='"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
+            sec_ch_ua_platform='"Windows"',
+        )
+
+        with patch("src.avito.client._pick_random_fingerprint", return_value=chosen_fp):
             new_ua = _rotate_user_agent(session)
 
         self.assertEqual(new_ua, "UA-NEW")
         self.assertEqual(session.headers["User-Agent"], "UA-NEW")
+        self.assertEqual(session.headers["sec-ch-ua"], chosen_fp.sec_ch_ua)
+        self.assertEqual(session.headers["sec-ch-ua-platform"], chosen_fp.sec_ch_ua_platform)
+        self.assertEqual(session.headers["sec-ch-ua-mobile"], chosen_fp.sec_ch_ua_mobile)
 
     async def test_fetch_page_on_429_rotates_ua_waits_minute_and_retries(self) -> None:
         """При 429 клиент должен сменить UA, подождать 60 секунд и повторить запрос."""
@@ -114,6 +129,34 @@ class AvitoClientFetchPageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "ok-body")
         rotate_mock.assert_not_called()
         sleep_mock.assert_awaited_once_with(6.0)
+
+
+class AvitoClientSessionHeadersTests(unittest.IsolatedAsyncioTestCase):
+    """Проверяет, что сессия создаётся с правдоподобными browser-like заголовками."""
+
+    async def test_make_session_applies_browser_like_headers_from_fingerprint(self) -> None:
+        """Клиент должен выставлять sec-fetch/sec-ch заголовки как у браузерной навигации."""
+        cfg = AvitoClientConfig(
+            city_slug="moskva",
+            max_pages=1,
+            page_delay_s=1,
+            timeout_s=5,
+            user_agent="UA-CUSTOM-TEST",
+        )
+        client = AvitoClient(cfg)
+        chosen_fp = BrowserFingerprint(
+            user_agent="UA-CHROME",
+            sec_ch_ua='"Not(A:Brand";v="99", "Google Chrome";v="132", "Chromium";v="132"',
+            sec_ch_ua_platform='"Linux"',
+        )
+
+        with patch("src.avito.client._pick_random_fingerprint", return_value=chosen_fp):
+            async with client._make_session() as session:
+                self.assertEqual(session.headers["User-Agent"], "UA-CUSTOM-TEST")
+                self.assertEqual(session.headers["sec-ch-ua"], chosen_fp.sec_ch_ua)
+                self.assertEqual(session.headers["sec-ch-ua-platform"], chosen_fp.sec_ch_ua_platform)
+                self.assertEqual(session.headers["sec-fetch-mode"], "navigate")
+                self.assertEqual(session.headers["sec-fetch-dest"], "document")
 
 
 if __name__ == "__main__":

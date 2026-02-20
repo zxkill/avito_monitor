@@ -23,6 +23,16 @@ class AvitoClientConfig:
     user_agent: str
 
 
+@dataclass(frozen=True)
+class BrowserFingerprint:
+    """Профиль заголовков, имитирующий реальный браузер Chrome под конкретную ОС."""
+
+    user_agent: str
+    sec_ch_ua: str
+    sec_ch_ua_platform: str
+    sec_ch_ua_mobile: str = "?0"
+
+
 class AvitoBlockedError(RuntimeError):
     pass
 
@@ -41,21 +51,54 @@ _BLOCK_REDIRECT_MARKERS = (
 # Статусы, которые обычно означают блок / ограничение
 _BLOCK_STATUSES = (401, 403, 429)
 
-# Большой пул User-Agent'ов для ротации при временных блокировках Avito.
-# Список содержит популярные современные браузеры на разных ОС, чтобы снизить
-# вероятность повторной блокировки из-за «примелькавшегося» fingerprint.
-_USER_AGENT_POOL = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13.6; rv:134.0) Gecko/20100101 Firefox/134.0",
-    "Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edg/133.0.3065.69",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Opera/116.0.5366.71",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Brave/1.75.181 Chrome/132.0.0.0 Safari/537.36",
+# Набор согласованных browser-fingerprint профилей.
+#
+# Почему это важно:
+# - Один только User-Agent уже недостаточен для правдоподобной маскировки.
+# - Антиботы часто проверяют связность UA и client hints (sec-ch-ua*).
+# - Поэтому мы храним «профиль» целиком и ротируем его атомарно.
+_BROWSER_FINGERPRINTS: tuple[BrowserFingerprint, ...] = (
+    BrowserFingerprint(
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+        sec_ch_ua='"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
+        sec_ch_ua_platform='"Windows"',
+    ),
+    BrowserFingerprint(
+        user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+        sec_ch_ua='"Not(A:Brand";v="99", "Google Chrome";v="132", "Chromium";v="132"',
+        sec_ch_ua_platform='"Linux"',
+    ),
+    BrowserFingerprint(
+        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+        sec_ch_ua='"Not(A:Brand";v="99", "Google Chrome";v="132", "Chromium";v="132"',
+        sec_ch_ua_platform='"macOS"',
+    ),
 )
+
+
+def _apply_fingerprint_headers(session: aiohttp.ClientSession, fp: BrowserFingerprint) -> None:
+    """
+    Применяет browser-like fingerprint к существующей HTTP-сессии.
+
+    Деталь реализации:
+    - Обновляем сразу согласованный набор заголовков, чтобы не получить
+      противоречивую комбинацию (например, Windows UA + macOS sec-ch-ua-platform).
+    """
+    session.headers.update(
+        {
+            "User-Agent": fp.user_agent,
+            "sec-ch-ua": fp.sec_ch_ua,
+            "sec-ch-ua-mobile": fp.sec_ch_ua_mobile,
+            "sec-ch-ua-platform": fp.sec_ch_ua_platform,
+        }
+    )
+
+
+def _pick_random_fingerprint(exclude_user_agent: str = "") -> BrowserFingerprint:
+    """Выбирает случайный профиль, по возможности отличный от текущего UA."""
+    exclude = (exclude_user_agent or "").strip()
+    candidates = [fp for fp in _BROWSER_FINGERPRINTS if fp.user_agent != exclude] or list(_BROWSER_FINGERPRINTS)
+    return random.choice(candidates)
 
 
 def _rotate_user_agent(session: aiohttp.ClientSession) -> str:
@@ -66,10 +109,9 @@ def _rotate_user_agent(session: aiohttp.ClientSession) -> str:
     шага ретрая, чтобы действительно изменить «отпечаток» клиента.
     """
     current_ua = str(session.headers.get("User-Agent") or "")
-    candidates = [ua for ua in _USER_AGENT_POOL if ua != current_ua] or list(_USER_AGENT_POOL)
-    new_ua = random.choice(candidates)
-    session.headers["User-Agent"] = new_ua
-    return new_ua
+    fingerprint = _pick_random_fingerprint(current_ua)
+    _apply_fingerprint_headers(session, fingerprint)
+    return fingerprint.user_agent
 
 
 def _jitter(a: float, b: float) -> float:
@@ -228,6 +270,14 @@ class AvitoClient:
     def _make_session(self) -> aiohttp.ClientSession:
         timeout = aiohttp.ClientTimeout(total=self.cfg.timeout_s)
 
+        # Базовый, максимально «браузерный» набор заголовков.
+        #
+        # Важно:
+        # - sec-fetch-* имитируют навигационный запрос документа.
+        # - DNT / Priority / Pragma / Cache-Control помогают быть ближе к
+        #   реальному паттерну браузерных запросов.
+        # - sec-ch-* на старте подставляем под дефолтный конфиг, но затем можем
+        #   заменить целым fingerprint-профилем (в т.ч. при rotate on block).
         headers = {
             "User-Agent": self.cfg.user_agent,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -236,6 +286,16 @@ class AvitoClient:
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1",
             "Cache-Control": "max-age=0",
+            "Pragma": "no-cache",
+            "DNT": "1",
+            "Priority": "u=0, i",
+            "sec-fetch-site": "none",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-user": "?1",
+            "sec-fetch-dest": "document",
+            "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
         }
 
         # Мягко, но устойчиво:
@@ -250,12 +310,24 @@ class AvitoClient:
             ssl=False,
         )
 
-        return aiohttp.ClientSession(
+        session = aiohttp.ClientSession(
             timeout=timeout,
             headers=headers,
             connector=connector,
             cookie_jar=aiohttp.CookieJar(unsafe=True),
         )
+
+        # Если пользователь передал кастомный UA в конфиге, стараемся не ломать его,
+        # но при этом инициализируем согласованный набор client hints из случайного
+        # browser fingerprint. Это делает начальный запрос заметно «живее».
+        if self.cfg.user_agent:
+            matching_fp = next((fp for fp in _BROWSER_FINGERPRINTS if fp.user_agent == self.cfg.user_agent), None)
+            chosen_fp = matching_fp or _pick_random_fingerprint()
+            _apply_fingerprint_headers(session, chosen_fp)
+            if not matching_fp:
+                session.headers["User-Agent"] = self.cfg.user_agent
+
+        return session
 
     @staticmethod
     def _looks_like_protection(html_text: str) -> bool:
