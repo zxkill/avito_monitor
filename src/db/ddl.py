@@ -179,6 +179,61 @@ CREATE INDEX IF NOT EXISTS ix_items_unclassified_last_seen
 CREATE INDEX IF NOT EXISTS ix_items_region_city_last_seen
   ON items(region, city, last_seen_at DESC);
 
+
+-- =========================
+-- SEED: базовый словарь ноутбуков (минимальный, расширяемый)
+-- =========================
+
+INSERT INTO brands(name, name_norm)
+VALUES
+  ('Acer', 'acer'),
+  ('Asus', 'asus'),
+  ('Samsung', 'samsung'),
+  ('Toshiba', 'toshiba'),
+  ('Honor', 'honor'),
+  ('Sharp', 'sharp'),
+  ('Packard Bell', 'packard bell'),
+  ('Lenovo', 'lenovo'),
+  ('Dell', 'dell'),
+  ('HP', 'hp')
+ON CONFLICT (name_norm) DO NOTHING;
+
+INSERT INTO model_families(category, brand_id, family_name, family_name_norm)
+SELECT 'laptop', b.id, x.family_name, x.family_name_norm
+FROM (
+  VALUES
+    ('acer', 'Acer Aspire 5552G', 'acer aspire 5552g'),
+    ('acer', 'Acer Aspire 1410', 'acer aspire 1410'),
+    ('acer', 'Acer Aspire ES1-111', 'acer aspire es1-111'),
+    ('acer', 'Acer Aspire 5315', 'acer aspire 5315'),
+    ('acer', 'Acer V3-571G', 'acer v3-571g'),
+    ('asus', 'Asus X61SV', 'asus x61sv'),
+    ('samsung', 'Samsung R528', 'samsung r528'),
+    ('honor', 'Honor MagicBook 14', 'honor magicbook 14')
+) AS x(brand_norm, family_name, family_name_norm)
+JOIN brands b ON b.name_norm = x.brand_norm
+ON CONFLICT (brand_id, family_name_norm) DO NOTHING;
+
+-- Алиасы по брендам: даже если семейство не найдено, бренд будет заполнен.
+INSERT INTO model_aliases(brand_id, match_type, pattern, weight)
+SELECT b.id, 'token', x.pattern, x.weight
+FROM (
+  VALUES
+    ('acer', 'acer', 3),
+    ('asus', 'asus', 3),
+    ('samsung', 'samsung', 3),
+    ('toshiba', 'toshiba', 3),
+    ('honor', 'honor', 3),
+    ('sharp', 'sharp', 3),
+    ('packard bell', 'packardbell', 3),
+    ('packard bell', 'packard-bell', 3)
+) AS x(brand_norm, pattern, weight)
+JOIN brands b ON b.name_norm = x.brand_norm
+WHERE NOT EXISTS (
+  SELECT 1 FROM model_aliases ma
+  WHERE ma.brand_id = b.id AND ma.match_type = 'token' AND ma.pattern = x.pattern
+);
+
 """
 
 
