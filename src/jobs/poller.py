@@ -159,6 +159,17 @@ async def incremental_poll_all(
 
         if new_items and bot and notify_chat_id:
             stats = await repo.get_price_stats(search_id, window=500)
+
+            # Для корректной оценки выгоды считаем персональный рынок для каждого нового лота:
+            # variant -> family -> fallback search.
+            for it in new_items:
+                item_id = int(it["id"])
+                lot_stats = await repo.get_price_stats_for_item(item_id=item_id, search_id=search_id, window=500)
+                it["market_stats"] = {
+                    **lot_stats,
+                }
+                log.debug("market stats prepared: item_id=%s stats=%s", item_id, it["market_stats"])
+
             messages = build_report_v2(source, stats, new_items, top_n=10, score_min=65, profit_min_need=1500)
             for msg in messages:
                 await bot.send_message(notify_chat_id, msg, parse_mode="HTML", disable_web_page_preview=True)

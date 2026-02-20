@@ -33,13 +33,16 @@ def build_report(query: str, stats: dict, items: list[dict], *, top_n: int = 10,
 
     scored = []
     for it in items:
+        # Для каждого лота можно передать персональную рыночную статистику
+        # (по variant/family). Если её нет — используем общий fallback по поиску.
+        lot_stats = it.get("market_stats") or {}
         dec = analyze_lot(
             title=it["title"],
             description=it.get("description"),
             price=it.get("price"),
-            market_p50=p50,
-            market_p25=p25,
-            market_p75=p75,
+            market_p50=lot_stats.get("p50", p50),
+            market_p25=lot_stats.get("p25", p25),
+            market_p75=lot_stats.get("p75", p75),
         )
         scored.append((dec, it))
 
@@ -62,12 +65,15 @@ def build_report(query: str, stats: dict, items: list[dict], *, top_n: int = 10,
 
     for dec, it in show:
         reasons = "; ".join(dec.reasons) if dec.reasons else "—"
+        lot_stats = it.get("market_stats") or {}
+        lot_p50 = lot_stats.get("p50", p50)
+        market_scope = lot_stats.get("scope") or "search"
 
         block = (
             f"\n━━━━━━━━━━━━━━━━━━\n"
             f"⭐ <b>Score:</b> {dec.score}\n"
             f"💰 <b>Цена:</b> {format_money(it.get('price'))} ₽\n"
-            f"📊 <b>Рынок (p50):</b> {format_money(p50)} ₽\n"
+            f"📊 <b>Рынок (p50/{esc(market_scope)}):</b> {format_money(lot_p50)} ₽\n"
             f"📈 <b>Профит:</b> {format_money(dec.profit_min)} .. {format_money(dec.profit_max)} ₽\n"
             f"🧩 <b>Причины:</b> {esc(reasons)}\n"
             f"🔗 <a href=\"{esc(it['url'])}\">Открыть объявление</a>\n"
@@ -111,13 +117,20 @@ def build_report_v2(
     # 1) считаем решения по каждому лоту
     scored: list[tuple] = []
     for it in items:
+        # ВАЖНО: считаем прибыль относительно "своего рынка" лота (variant/family),
+        # иначе сравнение с общим рынком даёт искажение для дорогих/дешёвых семейств.
+        lot_stats = it.get("market_stats") or {}
+        lot_p25 = lot_stats.get("p25", p25)
+        lot_p50 = lot_stats.get("p50", p50)
+        lot_p75 = lot_stats.get("p75", p75)
+
         dec = analyze_lot(
             title=it.get("title") or "",
             description=it.get("description"),
             price=it.get("price"),
-            market_p50=p50,
-            market_p25=p25,
-            market_p75=p75,
+            market_p50=lot_p50,
+            market_p25=lot_p25,
+            market_p75=lot_p75,
         )
         scored.append((dec, it))
 
@@ -147,14 +160,19 @@ def build_report_v2(
         title = it.get("title") or ""
         city = it.get("city") or it.get("location") or ""
         reasons = "; ".join(dec.reasons) if getattr(dec, "reasons", None) else "—"
+        lot_stats = it.get("market_stats") or {}
+        lot_p25 = lot_stats.get("p25", p25)
+        lot_p50 = lot_stats.get("p50", p50)
+        lot_p75 = lot_stats.get("p75", p75)
 
         s_badge = badge_score(int(dec.score or 0))
         p_badge = badge_profit(dec.profit_min, dec.profit_max)
-        pr_badge = badge_price(price, p25, p50, p75)
+        pr_badge = badge_price(price, lot_p25, lot_p50, lot_p75)
+        market_scope = lot_stats.get("scope") or "search"
 
         parts.append(f"{idx}) {p_badge} {s_badge} <b>{esc(title)}</b>\n")
         parts.append(f"💰 <b>{format_money(price)} ₽</b> · 📌 {esc(pr_badge)} · 📍 {esc(city)}\n" if city else f"💰 <b>{format_money(price)} ₽</b> · 📌 {esc(pr_badge)}\n")
-        parts.append(f"📊 p50: <b>{format_money(p50)} ₽</b>\n")
+        parts.append(f"📊 p50 ({esc(market_scope)}): <b>{format_money(lot_p50)} ₽</b>\n")
         parts.append(f"📈 Профит: <b>{format_money(dec.profit_min)} .. {format_money(dec.profit_max)} ₽</b>\n")
         parts.append(f"🧩 {esc(reasons)}\n")
         parts.append(f"🔗 <a href=\"{esc(url)}\">Открыть объявление</a>\n\n")
