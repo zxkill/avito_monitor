@@ -28,12 +28,17 @@ class ModelClassifierTests(unittest.TestCase):
         cls._regex_aliases = []
         cls._variant_to_family = {100: 10}
         cls._variant_to_brand = {100: 1}
-        cls._family_to_brand = {10: 1, 20: 2, 30: 3, 40: 4}
-        cls._brand_norm_to_id = {"acer": 2, "lenovo": 1, "samsung": 3, "apple": 4}
+        cls._family_to_brand = {10: 1, 20: 2, 30: 3, 40: 4, 50: 5, 60: 6, 70: 7, 80: 8, 90: 9}
+        cls._brand_norm_to_id = {"acer": 2, "lenovo": 1, "samsung": 3, "apple": 4, "maibenben": 5, "digma": 6, "ardor": 7, "roverbook": 8, "jumper": 9}
         cls._family_rows = [
             FamilyRow(family_id=20, brand_id=2, norm="acer aspire 5315", compact="aceraspire5315"),
             FamilyRow(family_id=30, brand_id=3, norm="samsung r528", compact="samsungr528"),
-            FamilyRow(family_id=40, brand_id=4, norm="apple macbook pro 13 2013", compact="applemacbookpro132013")
+            FamilyRow(family_id=40, brand_id=4, norm="apple macbook pro 13 2013", compact="applemacbookpro132013"),
+            FamilyRow(family_id=50, brand_id=5, norm="maibenben x558", compact="maibenbenx558"),
+            FamilyRow(family_id=60, brand_id=6, norm="digma eve c5802", compact="digmaevec5802"),
+            FamilyRow(family_id=70, brand_id=7, norm="ardor gaming", compact="ardorgaming"),
+            FamilyRow(family_id=80, brand_id=8, norm="roverbook pro", compact="roverbookpro"),
+            FamilyRow(family_id=90, brand_id=9, norm="jumper ezbook 3 pro", compact="jumperezbook3pro")
         ]
         return cls
 
@@ -104,6 +109,35 @@ class ModelClassifierTests(unittest.TestCase):
 
         self.assertEqual(result["brand_id"], 4)
         self.assertEqual(result["family_id"], 40)
+
+
+    def test_maibenben_series_detected(self) -> None:
+        """Maibenben X558 из проблемного списка должен определяться как family."""
+        cls = self._make_classifier()
+        result = cls.classify(title="Игровой ноутбук Maibenben x558 RTX 3060 6Gb", description=None)
+        self.assertEqual(result["brand_id"], 5)
+        self.assertEqual(result["family_id"], 50)
+
+    def test_digma_eve_series_detected(self) -> None:
+        """Digma EVE C5802 должен распознаваться по словарю/токенам."""
+        cls = self._make_classifier()
+        result = cls.classify(title="Ноутбук digma eve C5802 донор на запчасти", description=None)
+        self.assertEqual(result["brand_id"], 6)
+        self.assertEqual(result["family_id"], 60)
+
+    def test_ardor_gaming_detected(self) -> None:
+        """Ardor gaming должен давать корректное семейство."""
+        cls = self._make_classifier()
+        result = cls.classify(title="Ardor gaming", description=None)
+        self.assertEqual(result["brand_id"], 7)
+        self.assertEqual(result["family_id"], 70)
+
+    def test_ezbook_detected(self) -> None:
+        """EZbook 3 PRO должен маппиться в семейство Jumper EZbook 3 Pro."""
+        cls = self._make_classifier()
+        result = cls.classify(title="Ультрабук Ezbook 3 PRO", description=None)
+        self.assertEqual(result["brand_id"], 9)
+        self.assertEqual(result["family_id"], 90)
 
     def test_fallback_dictionary_detects_brand_and_family(self) -> None:
         """Если алиасов нет, классификатор должен взять бренд/семейство из словаря БД."""

@@ -24,6 +24,12 @@ _HUMAN_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bинфиникс\b", re.I), "infinix"),
     (re.compile(r"\bнетбук\b", re.I), "netbook"),
     (re.compile(r"\bнэтбук\b", re.I), "netbook"),
+    (re.compile(r"\bардор\b", re.I), "ardor"),
+    (re.compile(r"\bмайбенбен\b", re.I), "maibenben"),
+    (re.compile(r"\bдигма\b", re.I), "digma"),
+    (re.compile(r"\bровербук\b", re.I), "roverbook"),
+    (re.compile(r"\bезбук\b", re.I), "jumper ezbook"),
+    (re.compile(r"\bezbook\b", re.I), "jumper ezbook"),
 )
 
 
@@ -335,7 +341,12 @@ class ModelClassifier:
 
         if brand_id is None and family_id is None and variant_id is None:
             # Чтобы легче отлаживать в проде низкий recall, логируем только короткую выжимку.
-            log.debug("classify miss: title=%r", (title or "")[:120])
+            # Доп. лог: отдельно подсвечиваем случаи, где есть тех-сигналы (rtx, core i5),
+            # но нет бренда/семейства — это кандидаты на пополнение словаря.
+            if re.search(r"\b(rtx\s*\d{3,4}|core\s*i[3579]|ryzen\s*[3579])\b", text, re.I):
+                log.info("classify miss with tech-signal: title=%r", (title or "")[:160])
+            else:
+                log.debug("classify miss: title=%r", (title or "")[:120])
             return best
 
         scope = "brand"

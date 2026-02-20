@@ -213,7 +213,12 @@ VALUES
   ('Razer', 'razer'),
   ('Microsoft', 'microsoft'),
   ('Infinix', 'infinix'),
-  ('eMachines', 'emachines')
+  ('eMachines', 'emachines'),
+  ('Maibenben', 'maibenben'),
+  ('Digma', 'digma'),
+  ('Roverbook', 'roverbook'),
+  ('Ardor', 'ardor'),
+  ('Jumper', 'jumper')
 ON CONFLICT (name_norm) DO NOTHING;
 
 -- 2) Семейства: наиболее частые линейки и серии, чтобы резко поднять recall по family.
@@ -309,7 +314,12 @@ FROM (
     ('emachines', 'eMachines E728', 'emachines e728'),
     ('acer', 'Acer Aspire 5635ZG', 'acer aspire 5635zg'),
     ('apple', 'Apple MacBook Pro 13 2013', 'apple macbook pro 13 2013'),
-    ('dns', 'DNS Netbook', 'dns netbook')
+    ('dns', 'DNS Netbook', 'dns netbook'),
+    ('maibenben', 'Maibenben X558', 'maibenben x558'),
+    ('digma', 'Digma EVE C5802', 'digma eve c5802'),
+    ('roverbook', 'Roverbook Pro', 'roverbook pro'),
+    ('ardor', 'Ardor Gaming', 'ardor gaming'),
+    ('jumper', 'Jumper EZbook 3 Pro', 'jumper ezbook 3 pro')
 ) AS x(brand_norm, family_name, family_name_norm)
 JOIN brands b ON b.name_norm = x.brand_norm
 ON CONFLICT (brand_id, family_name_norm) DO NOTHING;
@@ -330,7 +340,10 @@ FROM (
     ('honor magicbook 14', 'Honor MagicBook 14 2021', 'honor magicbook 14 2021', NULL, 2021),
     ('acer nitro 5', 'Acer Nitro 5 AN515', 'acer nitro 5 an515', NULL, NULL),
     ('apple macbook pro 13', 'Apple MacBook Pro 13 2013', 'apple macbook pro 13 2013', NULL, 2013),
-    ('infinix inbook x3 xl422', 'Infinix InBook X3 XL422', 'infinix inbook x3 xl422', NULL, NULL)
+    ('infinix inbook x3 xl422', 'Infinix InBook X3 XL422', 'infinix inbook x3 xl422', NULL, NULL),
+    ('maibenben x558', 'Maibenben X558 RTX 3060', 'maibenben x558 rtx 3060', NULL, NULL),
+    ('digma eve c5802', 'Digma EVE C5802', 'digma eve c5802', NULL, NULL),
+    ('jumper ezbook 3 pro', 'Jumper EZbook 3 Pro', 'jumper ezbook 3 pro', NULL, NULL)
 ) AS x(family_name_norm, variant_name, variant_name_norm, gen, year)
 JOIN model_families mf ON mf.family_name_norm = x.family_name_norm
 ON CONFLICT (family_id, variant_name_norm) DO NOTHING;
@@ -361,7 +374,13 @@ FROM (
     ('emachines', 'emachines', 3),
     ('emachines', 'machines', 2),
     ('apple', 'macbook', 4),
-    ('samsung', 'самсунг', 4)
+    ('samsung', 'самсунг', 4),
+    ('maibenben', 'maibenben', 4),
+    ('digma', 'digma', 4),
+    ('roverbook', 'roverbook', 4),
+    ('ardor', 'ardor', 4),
+    ('jumper', 'jumper', 4),
+    ('jumper', 'ezbook', 3)
 ) AS x(brand_norm, pattern, weight)
 JOIN brands b ON b.name_norm = x.brand_norm
 WHERE NOT EXISTS (
@@ -395,7 +414,12 @@ FROM (
     ('emachines e728', 'e728', 9),
     ('dns netbook', 'dnsnetbook', 7),
     ('apple macbook pro 13', 'macbookpro13', 8),
-    ('apple macbook pro 13 2013', 'pro13 2013', 9)
+    ('apple macbook pro 13 2013', 'pro13 2013', 9),
+    ('maibenben x558', 'x558', 9),
+    ('digma eve c5802', 'c5802', 9),
+    ('roverbook pro', 'roverbookpro', 8),
+    ('ardor gaming', 'ardorgaming', 8),
+    ('jumper ezbook 3 pro', 'ezbook3pro', 9)
 ) AS x(family_name_norm, pattern, weight)
 JOIN model_families mf ON mf.family_name_norm = x.family_name_norm
 WHERE NOT EXISTS (
@@ -412,7 +436,12 @@ FROM (
     ('acer aspire 5635zg', '5635 zg', 9),
     ('apple macbook pro 13 2013', 'macbook pro 13 2013', 10),
     ('samsung r528', 'самсунг r528', 9),
-    ('dns netbook', 'netbook dns', 8)
+    ('dns netbook', 'netbook dns', 8),
+    ('maibenben x558', 'maibenben x558', 10),
+    ('digma eve c5802', 'digma eve c5802', 10),
+    ('roverbook pro', 'roverbook pro', 10),
+    ('ardor gaming', 'ardor gaming', 10),
+    ('jumper ezbook 3 pro', 'ezbook 3 pro', 10)
 ) AS x(family_name_norm, pattern, weight)
 JOIN model_families mf ON mf.family_name_norm = x.family_name_norm
 WHERE NOT EXISTS (
@@ -432,7 +461,10 @@ FROM (
     ('apple macbook pro 13 m1', 'pro m1', 10),
     ('acer nitro 5 an515', 'an515', 10),
     ('apple macbook pro 13 2013', 'macbook pro 13 2013', 10),
-    ('infinix inbook x3 xl422', 'inbook x3 xl422', 10)
+    ('infinix inbook x3 xl422', 'inbook x3 xl422', 10),
+    ('maibenben x558 rtx 3060', 'x558 rtx 3060', 10),
+    ('digma eve c5802', 'eve c5802', 10),
+    ('jumper ezbook 3 pro', 'ezbook 3 pro', 10)
 ) AS x(variant_name_norm, pattern, weight)
 JOIN model_variants mv ON mv.variant_name_norm = x.variant_name_norm
 WHERE NOT EXISTS (
